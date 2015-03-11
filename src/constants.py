@@ -1,0 +1,97 @@
+#!/usr/bin/env python
+#-*- coding: utf-8 -*-
+
+##################
+# Global variables
+##################
+
+
+###########
+# Constants
+###########
+
+#
+# For Simulation configuration options
+#
+PORT = "--port"
+MIN_PORT = "-p"
+DEFAULT_PORT = 8813
+
+#
+# Swarm configuration
+#
+EVAPORATION_RATE = "--evaporation-rate"
+MIN_EVAPORATION_RATE = "-er"
+DEFAULT_EVAPORATION_RATE = 0.5
+BETA = "--beta" # same as evaporation rate
+MIN_BETA = "-b"
+
+RESPONSE_THRESHOLD = "--response-threshold"
+MIN_RESPONSE_THRESHOLD = "-rt"
+DEFAULT_RESPONSE_THRESHOLD = 0.5
+THETA = "--theta" # same as response threshold
+MIN_THETA = "-t"
+
+#
+# Learning configuration
+#
+LEARNING_RATE = "--learning-rate"
+MIN_LEARNING_RATE = "-lr"
+DEFAULT_LEARNING_RATE = 0.5
+ALPHA = "--alpha"   # same as learning rate
+MIN_ALPHA = "-a"
+
+DISCOUNT_FACTOR = "--discount-factor"
+MIN_DISCOUNT_FACTOR = "-df"
+DEFAULT_DISCOUNT_FACTOR = 0.9 #0.9
+GAMMA = "--gamma"   # same as discount factor
+MIN_GAMMA = "-g"
+
+CURIOSITY = "--curiosity"
+MIN_CURIOSITY = "-c"
+DEFAULT_CURIOSITY = 1
+EPSILON = "--epsilon"   # same as curiosity
+MIN_EPSILON = "-e"
+
+CURIOSITY_DECAY = "--curiosity-decay"
+MIN_CURIOSITY_DECAY = "-cd"
+DEFAULT_CURIOSITY_DECAY = 0.1#0.05#0.05#
+EPSILON_DECAY = "--epsilon-decay"   # same as curiosity decay
+MIN_EPSILON_DECAY = "-ed"
+
+EXPLORATION_PERIOD = "--exploration-period"
+MIN_EXPLORATION_PERIOD = "-ep"
+DEFAULT_EXPLORATION_PERIOD = 30
+
+QVALUE = "--q-value"
+MIN_QVALUE = "-qv"
+DEFAULT_QVALUE = 0
+
+REWARD_EXPONENT = "--reward-exponent"
+MIN_REWARD_EXPONENT = "-re"
+DEFAULT_REWARD_EXPONENT = 2
+
+MIN_BEST_QTABLE_FILE = "-bqf"
+BEST_QTABLE_FILE = "--best-qtable-file"
+DEFAULT_BEST_QTABLE_FILE = None
+
+#
+# Hybrid configuration
+#
+MEMORY_WINDOW = "--memory-window"
+MIN_MEMORY_WINDOW = "-mw"
+# The size of window time steps
+DEFAULT_MEMORY_WINDOW = 500 #100 # 500 ~ two full cycles
+
+MEMORY_LOSS_FACTOR = "--memory-loss"
+MIN_MEMORY_LOSS_FACTOR = "-ml"
+DEFAULT_MEMORY_LOSS_FACTOR = 0.5
+
+RHO = "--rho"
+MIN_RHO = "-r"
+DEFAULT_RHO = 0.5
+
+OMEGA = "--omega"
+MIN_OMEGA = "-o"
+DEFAULT_OMEGA = 0.5
+

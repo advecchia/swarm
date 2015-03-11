@@ -1,0 +1,390 @@
+#!/usr/bin/env python
+#-*- coding: utf-8 -*-
+
+#import traci
+from collections import deque #, defaultdict
+
+class Model(object):
+    """The class to manipulate a model for context detection.
+    """
+
+    """The maximum number of chosen past actions. """
+    MAX_PAST_EXPERIENCES = 10
+
+    def __init__(self, item, omega, rho, states_number, memory_loss_factor):
+        super(Model, self).__init__()
+
+        """Keeps the item program. """
+        self.item = item
+
+        """Keeps the estimate transition probabilities of model. """
+        self.__transition_probability = dict()
+
+        """Keeps the number of times, an action was executed in a state, in the model. """
+        self.__transition_estimate = dict()
+
+        """Keeps the actions's reward model table. """
+        self.__reward_model = dict()
+
+        """Keeps the trace quality for the model.
+
+        Used for evaluate the quality of the models and to choose the best to use. 
+        """
+        self.__trace_quality_model = 0
+
+        """"Specifies the relative importance of rewards and transitions for the the model’s quality. """
+        self.__omega = omega
+
+        """The adjustment coefficient for the quality trace. """
+        self.__rho = rho
+
+        """Keeps the total number of possibly states for this model.
+
+        Used here to initialize the transition table, and do not fill it for all
+        the possibly <state,action,new_state> tuple.
+        """
+        self.__states_number = states_number
+
+        """The factor that influences loss of the learned plans. """
+        self.__memory_loss_factor = memory_loss_factor
+
+    @property
+    def omega(self):
+        return self.__omega
+    @omega.setter
+    def omega(self, omega):
+        self.__omega = omega
+
+    @property
+    def rho(self):
+        return self.__rho
+    @rho.setter
+    def rho(self, rho):
+        self.__rho = rho
+
+    @property
+    def states_number(self):
+        return self.__states_number
+    @states_number.setter
+    def states_number(self, states_number):
+        self.__states_number = states_number
+
+    @property
+    def transition_probability(self):
+        return self.__transition_probability
+    def update_transition_probability(self, state, action, new_state):
+        """Updates the transition estimative probabilities's table for this model.
+        """
+        self.init_transition_probability(state, action, new_state)
+        self.__transition_probability[(state, action, new_state)] += self.transition_probability_average(state, action, new_state, new_state)
+        #print "Update: "+str(self.__transition_probability[(state, action, new_state)])
+    def init_transition_probability(self, state, action, new_state):
+        """If there is no index for current tuple <state, action, new_state>
+        in the transition estimative probabilities's table, creates it with default
+        value.
+        """
+        try:
+            self.__transition_probability[(state, action, new_state)]
+        except KeyError:
+            self.__transition_probability[(state, action, new_state)] = 1.0/self.states_number
+
+    def transition_probability_average(self, state, action, new_state, k):
+        """Takes the likelihood estimation between the transition probability and this
+        transition estimative.
+        """
+        self.init_transition_estimate(state, action)
+        self.init_transition_probability(state, action, new_state)
+        tp = self.transition_probability[(state, action, new_state)]
+        #print "Update: "+str(self.__transition_probability[(state, action, new_state)])
+        te = self.transition_estimate[(state, action)] + 1
+        if k == new_state:
+            delta = (1 - tp) / te
+        else:
+            delta = (0 - tp) / te
+
+        #print "Delta: "+str(delta)
+        return delta
+
+    @property
+    def transition_estimate(self):
+        return self.__transition_estimate
+    def update_transition_estimate(self, state, action):
+        """Updates the counter of transition estimative's table for this model.
+        """
+        self.init_transition_estimate(state, action)
+        te = self.__transition_estimate[(state, action)] + 1
+        self.__transition_estimate[(state, action)] = min(te, self.MAX_PAST_EXPERIENCES)
+    def init_transition_estimate(self, state, action):
+        """If there is no index for current tuple <state, action> in the counter
+        of transition estimative's table, creates it with default value.
+        """
+        try:
+            self.__transition_estimate[(state, action)]
+        except KeyError:
+            self.__transition_estimate[(state, action)] = 0
+
+    @property
+    def reward_model(self):
+        return self.__reward_model
+    def update_reward_model(self, state, action, reward):
+        """Updates the actions's reward model table for this model.
+        """
+        self.init_reward_model(state, action)
+        self.__reward_model[(state, action)] += self.reward_model_average(state, action, reward)
+    def init_reward_model(self, state, action):
+        """If there is no index for current tuple <state, action> in the 
+        actions's reward model table, creates it with default value.
+        """
+        try:
+            self.__reward_model[(state, action)]
+        except KeyError:
+            self.__reward_model[(state, action)] = 0
+
+    def reward_model_average(self, state, action, reward):
+        """Takes the moving average between the last reward and the 
+        transition estimative.
+        """
+        self.init_reward_model(state, action)
+        reward_model = reward - self.reward_model[(state, action)]
+        self.init_transition_estimate(state, action)
+        te = self.transition_estimate[(state, action)] + 1
+        return float(reward_model)/te
+
+    def confidence_model(self, state, action):
+        """The confidence model value, can be seen as the 'a priori' probability of 
+        selecting a model. The major difference between this method and a Bayesian 
+        approach is that we do not normalize the values by the marginal probability 
+        of the observation. Non-normalized values give us absolute measurements 
+        of quality, which are necessary in order to decide when a new model must 
+        be created.
+        """
+        self.init_transition_estimate(state, action)
+        te = self.transition_estimate[(state, action)]
+        return float(te)/self.MAX_PAST_EXPERIENCES
+
+    def reward_normalization_factor(self):
+        """Factor used for rescaling the dimension of prediction to [-1,+1]:
+        -1 worst prediction, +1 best prediction.
+        """
+        # Based on reward: (Rmax-Rmin)^-1
+        return 1.0/(1 -(-1))
+
+    def transition_normalization_factor(self, state, action):
+        """Factor used for rescaling the dimension of prediction to [-1,+1]:
+        -1 worst prediction, +1 best prediction.
+        """
+        self.init_transition_estimate(state, action)
+        te = self.transition_estimate[(state, action)]
+        return ((te + 1)**2)/2.0
+
+    def instantaneous_quality(self, state, action, new_state, reward):
+        """In case omega is equal to zero, the instantaneous quality, can be related to 
+        the Bayesian a posteriori probability of a model, given an experience tuple.
+        """
+        tnf = self.transition_normalization_factor(state, action)
+        rnf = self.reward_normalization_factor()
+        rma = self.reward_model_average(state, action, reward)
+        #TODO: Maybe is necessary to add all states for each partial model
+        #states = self.qtable.states
+        states = set([st for (st, a, nst) in self.transition_probability])
+        tpa_sum = 0
+        for s in states:
+            tpa_sum += self.transition_probability_average(state, action, new_state, s)**2
+
+        transition_prediction = 1 - (2 * tnf * tpa_sum)
+        reward_prediction = 1 - (2 * rnf * rma**2)
+        omega = self.omega
+        confidence = self.confidence_model(state, action)
+        iq = confidence * (omega*reward_prediction + (1-omega)*transition_prediction)
+        return iq
+
+    @property
+    def trace_quality_model(self):
+        return self.__trace_quality_model
+    def update_trace_quality_model(self, state, action, new_state, reward):
+        """Updates the trace quality's table for this model.
+        """
+        rho = self.rho
+        iq = self.instantaneous_quality(state, action, new_state, reward) 
+        tqm = self.trace_quality_model
+        self.__trace_quality_model += rho * (iq - tqm)
+    def update_trace_quality_model_memory_loss(self, loss_factor):
+        """Affects the trace quality, simulating the loss of memory, so if the
+        quality goes down, the model is dropped early.
+        """
+        self.__trace_quality_model = self.__trace_quality_model * self.__memory_loss_factor
+
+class RLContextDetection(object):
+    """The class that manipulate the models created to represent a number of
+    context detected environment (traffic congestion patterns)
+    """
+
+    """The maximum number of learning plans, based in context's change detected.
+
+    This assumption is based in a 24 hours of activity, in a standard environment, 
+    we have three increasing traffic demand patterns (6-8am, 11am-1pm, 5-7pm) and two  
+    decreasing traffic demand patterns (8-11am, 7pm-6am)
+    """
+    MAX_DETECTED_CONTEXT_PLANS = 12 # 5
+
+    """Is used to specify how much a partial model can be adjusted. """
+    MINIMUM_QUALITY_THRESHOLD = 0.5
+
+    def __init__(self, omega, rho, states_number, memory_loss_factor):
+        super(RLContextDetection, self).__init__()
+
+        """"Specifies the relative importance of rewards and transitions for the the model’s quality. """
+        self.__omega = omega
+
+        """The adjustment coefficient for the quality trace. """
+        self.__rho = rho
+
+        """Keeps the total number of possibly states for this model.
+
+        Used here to initialize the transition table, and do not fill it for all
+        the possibly <state,action,new_state> tuple.
+        """
+        self.__states_number = states_number
+
+        """The factor that influences loss of the learned plans. """
+        self.memory_loss_factor = memory_loss_factor
+
+        """A list of models, each model represents a traffic light program. """
+        self.models = deque(maxlen=self.MAX_DETECTED_CONTEXT_PLANS)
+
+    @property
+    def omega(self):
+        return self.__omega
+    @omega.setter
+    def omega(self, omega):
+        self.__omega = omega
+
+    @property
+    def rho(self):
+        return self.__rho
+    @rho.setter
+    def rho(self, rho):
+        self.__rho = rho
+
+    @property
+    def states_number(self):
+        return self.__states_number
+    @states_number.setter
+    def states_number(self, states_number):
+        self.__states_number = states_number
+
+    def add_items(self, items):
+        for item in items:
+            self.add_item(item[0])
+
+    def add_item(self, item):
+        """Adds a new item to models's memory.
+        """
+        model = None
+        if self.has_model(item):
+            # Adds the current item to existing model, updating his internal attributes
+            self.models[self.get_model_index(item.id)].item = item
+        else:
+            if len(self.models) >= self.MAX_DETECTED_CONTEXT_PLANS:
+                # Remove the worst valued model, because the memory is full
+                model = self.get_worst_item_id()
+                self.models.remove(self.get_worst_model())
+            # Appends a new model
+            self.models.append(Model(item, self.omega, self.rho, self.states_number, self.memory_loss_factor))
+        return model
+
+    def has_model(self, item):
+        """Verify if the item argument exists in the models memory.
+        """
+        if filter(lambda model: model.item.id==item.id, [model for model in self.models]):
+            return True
+        return False
+
+    def is_current_item_worst(self, item_id):
+        """Verify if the current item is the worst evaluated, based in a comparison
+        with the minimum quality threshold constant.
+        """
+        trace_quality = map(lambda model: model.trace_quality_model, 
+            [model for model in self.models if model.item.id == item_id])
+        try:
+            if trace_quality[0] < self.MINIMUM_QUALITY_THRESHOLD:
+                return True
+            return False
+
+        except KeyError as message:
+            print "Warning: There is no current model at models memory."
+            print message
+            return False
+
+    def update(self, state, action, new_state, reward):
+        """Updates the trace quality's table for all models.
+        """
+        map(lambda model: model.update_trace_quality_model(state, action, new_state, reward), self.models)
+
+    def update_transition_probability(self, item_id, state, action, new_state):
+        """Updates the transition estimative probabilities's table for the current model.
+        """
+        map(lambda model: model.update_transition_probability(state, action, new_state), 
+            [model for model in self.models if model.item.id == item_id])
+
+    def update_reward_model(self, item_id, state, action, reward):
+        """Updates the actions's reward model table for the current model.
+        """
+        map(lambda model: model.update_reward_model(state, action, reward), 
+            [model for model in self.models if model.item.id == item_id])
+
+    def update_transition_estimate(self, state, action):
+        """Updates the counter of transition estimative's table for all models.
+        """
+        map(lambda model: model.update_transition_estimate(state, action), self.models)
+
+    def get_best_model(self):
+        """Takes the best evaluated Model. """
+        model = max(self.models, key=lambda model: model.trace_quality_model)
+        return model
+
+    def get_worst_model(self):
+        """Takes the worst evaluated Model. """
+        model = min(self.models, key=lambda model: model.trace_quality_model)
+        return model
+
+    def get_best_item(self):
+        """Takes the best evaluated item's Model. """
+        model = self.get_best_model()
+        return model.item
+
+    def get_worst_item(self):
+        """Takes the worst evaluated item's Model. """
+        model = self.get_worst_model()
+        return model.item
+
+    def get_best_item_id(self):
+        """Takes the best evaluated item's Model id. """
+        item = self.get_best_item()
+        return item.id
+
+    def get_worst_item_id(self):
+        """Takes the worst evaluated item's Model id. """
+        item = self.get_worst_item()
+        return item.id
+
+    def get_model_index(self, item_id):
+        """Takes the index in models's memory that keeps the identified item parameter.
+        """
+        model_index = [idx for (idx,model) in enumerate(self.models) 
+                       if model.item.id == item_id]
+        return model_index[-1]
+
+    def debug(self):
+        data = []
+        for model in self.models:
+            data.append("ItemId: "+str(model.item.id))
+            data.append("Item: "+str(model.item))
+            data.append("Omega: "+str(model.omega))
+            data.append("Rho: "+str(model.rho))
+            data.append("RewardModel: "+str(model.reward_model))
+            data.append("TraceQualityModel: "+str(model.trace_quality_model))
+            data.append("TransitionEstimate: "+str(model.transition_estimate))
+            data.append("TransitionProbability: "+str(model.transition_probability))
+            print "\n".join(data)
+            

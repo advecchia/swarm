@@ -1,0 +1,341 @@
+#!/usr/bin/env python
+#-*- coding: utf-8 -*-
+
+from agent import Agent
+from learning import Learning
+#from rlcd import RLContextDetection
+#from collections import deque, defaultdict
+
+def function_of_iterable(fn_of_list):
+    def fn_of_iterable(iterable, *args):
+        if len(args) == 0:
+            return fn_of_list([i for i in iterable])
+        else:
+            return fn_of_list([iterable] + [i for i in args])
+
+    name = fn_of_list.__name__
+    fn_of_iterable.__name__ = name
+    fn_of_iterable.__doc__ = (fn_of_list.__doc__ +
+                            "\n{0}(a, b, c...) = {0}([a, b, c...])".format(name))
+
+    return fn_of_iterable
+
+@function_of_iterable
+def cartesian_prod(iterables):
+    """Obtains the cartesian product of iterables.
+
+    If ANY iterable is empty, the result will also be empty.
+
+    Returns a list of tuples, with all possible combinations where
+    the i-th element of the tuple is an element of the i-th iterable.
+    """
+    # prod([]) = [] and prod([a,b,c...]) = [a,b,c...]
+    if len(iterables) < 2:
+        return iterables
+
+    result = [(a, b) for a in iterables[0] for b in iterables[1]]
+    for i in iterables[2:]:
+        result = [t + (a,) for t in result for a in i]
+    return result
+
+class LearningAgent(Agent):#, Learning
+    """A Reinforcement Learning agent with Context Detection (RL-CD).
+    """
+
+    # Ten discrete limits for occupation lane states
+    # [0.20, 0.37, 0.5, 0.59, 0.67, 0.74, 0.8, 0.85, 0.89]
+    # Melhor TCC # DISCRETIZATION_LIMITS = [0.1, 0.21, 0.33, 0.5, 0.6, 0.65, 0.7]
+    DISCRETIZATION_LIMITS = [0.2, 0.4, 0.6, 0.8]
+    ACTION_FACTORS = [-0.1, 0.1]
+
+    def __init__(self, learning_rate, discount_factor, curiosity, 
+            exploration_period, reward_exponent, curiosity_decay, qvalue, **kwds):
+
+        super(LearningAgent, self).__init__(**kwds)
+
+        """The exponent that influences the """
+        self.reward_exponent = reward_exponent
+
+        # Memory for last state and action
+        self.last_state = None
+        self.last_action = None
+        self.last_step_action = None
+
+        # Generate the states and actions for green phases
+        relevant_phases = [(idx, phase) for (idx, phase)
+                           in enumerate(self.program_current.phases)
+                           if phase.has_green]
+        num_intervals = len(self.DISCRETIZATION_LIMITS) + 1
+        # [t+ (a,) for [(x,y) for x in a for y in b]]
+        states = cartesian_prod(range(num_intervals) for (idx, phase) in relevant_phases)
+
+#        actions = [(idx, round(phase.duration * factor,1))
+#                   for (idx, phase) in relevant_phases
+#                   for factor in self.ACTION_FACTORS] + [None]
+
+        actions = [(idx, factor)
+                   for (idx, phase) in relevant_phases
+                   for factor in self.ACTION_FACTORS] + [None]
+
+        #TCC#for factor in (-0.125, -0.085, -0.05, 0.10, 0.17, 0.25)] + [None]
+        #for factor in (0.12, 0.25, 0.33, -0.12, -0.25, -0.33)] + [None]
+
+        # Initialize the qtable
+        self.qtable = Learning(states, actions, learning_rate, discount_factor, curiosity, 
+             exploration_period, curiosity_decay, qvalue)
+
+#        """Limited memory of the best programs acquired. A set of tuples {("value","program")} """
+#        self.program_memory = RLContextDetection(0.5, 0.5, len(states))#(omega, rho)
+#        self.program_memory.add_item(self.program_current)
+
+        #print "LearningAgent created"
+
+    @property
+    def qvalues(self):
+        """Tuple with all ((state, action), q-value) tuples in the q-table."""
+        return tuple( ((state, action), self.qtable[state, action])
+                      for state  in self.qtable.states
+                      for action in self.qtable.actions )
+
+    def act(self):
+        """Observe information from SUMO, choose an action and perform it."""
+        super(LearningAgent, self).act()
+        data = ["\nStep: "+str(self.memory_window[-1])]
+
+        # Takes the tuple that points to an new_state in qtable
+        new_state = self.discretize_state()
+        data.append("State: "+str(new_state))
+        # TODO:media movel: =(A2-C1)*(2/(A2+1))+C1
+        # http://daltonvieira.com/medias-moveis-aprenda-como-utilizar-as-medias-moveis-para-auxiliar-suas-operacoes
+
+        # Chooses and executes the new action
+        new_action = self.qtable.act(new_state)
+        data.append("Action: "+str(new_action))
+
+        # Update the qtable in the N>1 actions
+        if self.last_state:
+            reward = self.calculate_reward()
+            self.qtable.observe(self.last_state, self.last_action, new_state, reward)
+            data.append("Reward: "+str(reward))
+            
+            """# Detect a new context and actuate 
+            self.program_memory.update(self.last_state, self.last_action, new_state, reward)
+            # Update the current program to the best program in program memory
+            best_program = self.program_memory.get_best_item()
+            self.program_current.fill_with(best_program, self.lanes)
+            if self.program_memory.is_current_item_worst(self.program_current.id):
+                #TODO: Create a new plan
+                item = self.init_program_current() # new program
+                item = self.program_current # new program
+                self.program_current = item
+                self.program_memory.add_item(item)
+            self.program_memory.update_transition_probability(self.program_current.id, self.last_state, self.last_action, new_state)
+            self.program_memory.update_reward_model(self.program_current.id, self.last_state, self.last_action, reward)
+            self.program_memory.update_transition_estimate(self.last_state, self.last_action)
+            self.program_memory.debug()
+            #"""
+
+        if new_action is not None:
+            cycle_length = sum(phase.duration for phase in self.program_current.phases
+                           if phase.has_green)
+            #(inc_idx, increment) = new_action
+            (inc_idx, action_factor) = new_action
+            increment = round(action_factor * self.program_current.phases[inc_idx].duration, 1)
+
+            # Increments the current phase
+            self.program_current.phases[inc_idx].duration += increment
+            data.append("ActionToPhase: "+str(self.program_current.phases[inc_idx]))
+
+            """Decrement the other phases to equate the cycle time
+            decr_phases = [(idx, phase) for idx, phase in enumerate(self.program_current.phases)
+                            if phase.has_green and idx != inc_idx]
+            #decr_phases = len(green_phases) - 1
+            decr_phases_len = len(decr_phases)
+            data.append("Decr.PhasesNum: "+str(decr_phases_len))
+            decrement = int(increment / decr_phases_len)
+            data.append("Decrement: "+str(decrement))
+            for (decr_idx, phase) in decr_phases:
+                #if decr_idx != inc_idx:
+                data.append("Different phases: "+str(decr_idx)+" != "+str(inc_idx))
+                #phase.duration -= decrement
+                self.program_current.phases[decr_idx].duration -= decrement
+
+            # Compensates errors on float->int conversion
+            #error = decr_phases_len * (increment % (decr_phases_len*3))
+            phs = [phase.duration for phase in self.program_current.phases
+                           if phase.has_green]
+            data.append("Durations: "+str(phs))
+            error = cycle_length - sum(phs)
+            data.append("Error: "+str(error))
+            if error > 0:
+                # The cycle is higher than expected
+                if self.program_current.phases[inc_idx].has_max_duration:
+                    for (decr_idx, phase) in decr_phases:
+                        self.program_current.phases[decr_idx].duration += int(error/decr_phases_len)
+                else:
+                    self.program_current.phases[inc_idx].duration += error
+            elif error < 0:
+                # The cycle is lower than expected
+                if self.program_current.phases[inc_idx].has_min_duration:
+                    for (decr_idx, phase) in decr_phases:
+                        self.program_current.phases[decr_idx].duration += int(error/decr_phases_len)
+                else:
+                    self.program_current.phases[inc_idx].duration += error
+            # decrement ends here"""
+            #self.update_program_current(self.program_current)
+
+        self.last_state = new_state
+        self.last_action = new_action
+        self.last_step_action = self.memory_window[-1]
+        #data.append("Phases: "+str(self.program_current.phases))
+        data.append("CycleTime: "+str(self.program_current.phase_cycle_time()))
+        print " # ".join(data)
+        #print "Learning actuate"
+
+    def discretize_state(self):
+        """Obtains from SUMO and discretizes the occupancies of the lanes."""
+        lanes_by_phase = (phase.green_lanes for phase in self.program_current.phases 
+                          if phase.has_green)
+        lanes_by_phase = map(lambda l: l, lanes_by_phase)
+        data = ["\nLanes: "+str(lanes_by_phase)]
+
+        phase_occupancies = [self.average([self.vehicular_occupancy[lane_id[0]][step]
+                                   for step in self.memory_window])
+                                   for lane_id in lanes_by_phase]
+
+        # Update the bias that affect the random behavior
+        relevant_phases_idx = [idx for (idx, phase)
+                           in enumerate(self.program_current.phases)
+                           if phase.has_green]
+        self.update_bias(phase_occupancies,relevant_phases_idx)
+
+        result = tuple(self.discretize_normalized(o) for o in phase_occupancies)
+        data.append("\nState: "+str(result))
+        #print " # ".join(data)
+        return result
+
+    def discretize_normalized(self, value):
+        """Discretizes a normalized value between [0,1] according to DISCRETIZATION_LIMITS."""
+        #print "\nPhaseOcc: "+str(value)
+        i = 0
+        for lim in self.DISCRETIZATION_LIMITS:
+            if value <= lim: break
+            else: i += 1
+        return i
+
+    def calculate_reward(self):
+        """ Calculates the reward for agent based in the occupancy density.
+        For the green lane phase. At a limited time (between the last action and now)
+
+        Lesser the reward_exponent bigger the reward, faster the convergence
+        return a value between -1 and 1
+        """
+        lanes_by_phase = (phase.green_lanes for phase in self.program_current.phases 
+                          if phase.has_green)
+        lanes_by_phase = map(lambda l: l, lanes_by_phase)
+
+        means = []
+        items = []
+        for lane_id in lanes_by_phase:
+            for step in filter(lambda s: s >= self.last_step_action,self.memory_window):
+                items.append(self.vehicular_occupancy[lane_id[0]][step])
+            means.append(self.average(items))
+
+        reward = 1 - self.average(means)
+        return (reward**self.reward_exponent * 2) - 1
+
+    def update(self, step):
+        """Updates the necessary attributes of this class. And call the action.
+        """
+        super(LearningAgent, self).update(step)
+
+        if self.is_time_to_act():
+            self.act()
+            self.update_program_current(self.program_current)
+
+    def update_program_current(self, program):
+        super(LearningAgent, self).update_program_current(program)
+
+    def update_bias(self, values,relevant_phases_idx):
+        """ Update the bias attribute for traffic light (values based on empirical experiment).
+        Uses a geometric mean to approximate the overall occupation of the traffic
+        light phases.
+        """
+        try:
+            prod = reduce(lambda x, y: x*y, filter(lambda val: val > 0, values))
+        except TypeError:
+            prod = 1
+        try:
+            pot = float(1.0/len(values))
+        except ZeroDivisionError:
+            pot = 0
+
+        geometric_mean = prod**pot
+        # The algorithm will ignore the bias and choose a real random next action.
+        if geometric_mean <= 0.10:#0.15
+            self.qtable.bias = (0, 0)
+        # The algorithm will focuses in a negative increment for the next action.
+        elif geometric_mean >= 0.30:
+            occ = min(values)
+            pos = values.index(occ)
+            self.qtable.bias = (relevant_phases_idx[pos], -1)
+            print "\nGM="+str(geometric_mean)+" OCC="+str(occ)
+        # The algorithm will focuses in a positive increment for the next action.
+        else:
+            occ = max(values)
+            pos = values.index(occ)
+            self.qtable.bias = (relevant_phases_idx[pos], 1)
+            print "\nGM="+str(geometric_mean)+" OCC="+str(occ)
+
+#        # The algorithm will ignore the bias and choose a real random next action.
+#        if geometric_mean >= 0.6:
+#            self.qtable.bias = (0,0)
+#        # The algorithm will focuses in a positive increment for the next action.
+#        elif geometric_mean < 0.3:
+#            occ = max(values)
+#            pos = values.index(occ)
+#            self.qtable.bias = (relevant_phases_idx[pos],1)
+#        # The algorithm will focuses in a negative increment for the next action.
+#        else:
+#            occ = min(values)
+#            pos = values.index(occ)
+#            self.qtable.bias = (relevant_phases_idx[pos], -1)
+
+    def load_qtable(self, qtables):
+        """ Take the saved data for traffic light qlearning algoritm and load it
+        into the traffic light.
+        """
+        for qtable in qtables:
+            if qtable["id"] == self.id:
+                self.qtable.states = qtable["states"]
+                self.qtable.actions = qtable["actions"]
+                self.qtable.table = qtable["table"]
+
+    def save_qtable(self):
+        """ Return a dict that contains the important data for qlearning algorithm.
+        The dict contains an id, the states, the actions and the qtable with rewards.
+        """
+        d = dict()
+        d["id"] = self.id 
+        d["states"] = self.qtable.states 
+        d["actions"] = self.qtable.actions 
+        d["table"] = self.qtable.table
+        return d
+
+    def __repr__(self):
+        data = [super(LearningAgent, self).__repr__()]
+        data.append("\nLearningAgent Class")
+        data.append("reward exponent="+str(self.reward_exponent))
+        data.append("last action="+str(self.last_action))
+        data.append("last state="+str(self.last_state))
+        data.append("Q-Learning table="+str(self.qtable))
+        return "\n".join(data)
+
+    def __str__(self):
+        data = [super(LearningAgent, self).__str__()]
+        data.append("\nLearningAgent Class")
+        data.append("reward exponent="+str(self.reward_exponent))
+        data.append("last action="+str(self.last_action))
+        data.append("last state="+str(self.last_state))
+        data.append("Q-Learning table="+str(self.qtable))
+        return "\n".join(data)
